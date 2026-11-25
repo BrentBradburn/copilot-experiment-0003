@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Function Plotter</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f5f7;
+    color: #222;
+    display: flex;
+    height: 100vh;
+  }
+  #sidebar {
+    width: 380px;
+    min-width: 380px;
+    padding: 16px;
+    background: #fff;
+    border-right: 1px solid #ddd;
+    overflow-y: auto;
+  }
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    min-width: 0;
+  }
+  #plotWrap {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+  }
+  #plot {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    cursor: crosshair;
+  }
+  h1 { font-size: 1.3em; margin: 0 0 12px; }
+  h2 { font-size: 1em; margin: 18px 0 8px; }
+  .fn {
+    border: 1px solid #ddd;
+    border-left: 6px solid #888;
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 8px;
+    background: #fafafa;
+  }
+  .fn-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .fn-header select { flex: 1; }
+  .fn-params {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+  }
+  .fn-params label { font-size: 0.75em; color: #555; display: flex; flex-direction: column; }
+  .fn-formula { font-family: monospace; font-size: 0.85em; margin-top: 6px; color: #333; }
+  input[type=number] { width: 100%; padding: 2px 4px; }
+  button { cursor: pointer; }
+  .row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .row label { font-size: 0.85em; display: flex; flex-direction: column; flex: 1; }
+  #sumFormula { font-family: monospace; font-size: 0.85em; word-break: break-word; }
+  #readout { font-family: monospace; font-size: 0.85em; margin-top: 8px; min-height: 1.4em; }
+  .hint { font-size: 0.8em; color: #666; }
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h1>Function Plotter</h1>
+
+  <h2>Functions</h2>
+  <div id="fnList"></div>
+  <div class="row">
+    <button id="addFn">+ Add function</button>
+    <button id="clearFns">Clear all</button>
+  </div>
+  <p class="hint">Each term is plotted as <code>A·f(B·x + C) + D</code>.</p>
+
+  <h2>Sum</h2>
+  <div class="row">
+    <label style="flex-direction:row;align-items:center;gap:6px">
+      <input type="checkbox" id="showSum" checked> Show combined (summed) function
+    </label>
+  </div>
+  <div id="sumFormula"></div>
+
+  <h2>View</h2>
+  <div class="row">
+    <label>x min <input type="number" id="xMin" step="any" value="-10"></label>
+    <label>x max <input type="number" id="xMax" step="any" value="10"></label>
+  </div>
+  <div class="row">
+    <label>y min <input type="number" id="yMin" step="any" value="-5"></label>
+    <label>y max <input type="number" id="yMax" step="any" value="5"></label>
+  </div>
+  <div class="row">
+    <button id="autoY">Auto-fit Y</button>
+    <button id="resetView">Reset view</button>
+  </div>
+  <p class="hint">Drag to pan, mouse wheel to zoom.</p>
+</div>
+
+<div id="main">
+  <div id="plotWrap"><canvas id="plot"></canvas></div>
+  <div id="readout"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Library of common continuous math functions.
+  const FUNCTIONS = {
+    sin:    { label: "sin(x)",   fn: Math.sin },
+    cos:    { label: "cos(x)",   fn: Math.cos },
+    tan:    { label: "tan(x)",   fn: Math.tan },
+    sinh:   { label: "sinh(x)",  fn: Math.sinh },
+    cosh:   { label: "cosh(x)",  fn: Math.cosh },
+    tanh:   { label: "tanh(x)",  fn: Math.tanh },
+    atan:   { label: "atan(x)",  fn: Math.atan },
+    exp:    { label: "exp(x)",   fn: Math.exp },
+    log:    { label: "ln(x)",    fn: Math.log },
+    sqrt:   { label: "sqrt(x)",  fn: Math.sqrt },
+    abs:    { label: "|x|",      fn: Math.abs },
+    linear: { label: "x",        fn: (x) => x },
+    square: { label: "x²",       fn: (x) => x * x },
+    cube:   { label: "x³",       fn: (x) => x * x * x },
+    recip:  { label: "1/x",      fn: (x) => 1 / x },
+    gauss:  { label: "exp(-x²)", fn: (x) => Math.exp(-x * x) },
+    sinc:   { label: "sinc(x)",  fn: (x) => (x === 0 ? 1 : Math.sin(x) / x) }
+  };
+
+  const COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                  "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f"];
+  const SUM_COLOR = "#000";
+  const DEFAULT_VIEW = { xMin: -10, xMax: 10, yMin: -5, yMax: 5 };
+
+  const state = {
+    terms: [],
+    nextId: 1,
+    view: Object.assign({}, DEFAULT_VIEW),
+    showSum: true
+  };
+
+  // ---- Math ----
+  function evalTerm(t, x) {
+    const y = t.A * FUNCTIONS[t.type].fn(t.B * x + t.C) + t.D;
+    return Number.isFinite(y) ? y : NaN;
+  }
+
+  function evalSum(x) {
+    let s = 0;
+    for (const t of state.terms) {
+      if (!t.visible) continue;
+      s += evalTerm(t, x);
+    }
+    return s;
+  }
+
+  function fmtNum(n) {
+    return Number.isInteger(n) ? String(n) : String(+n.toFixed(4));
+  }
+
+  function termFormula(t) {
+    const inner = FUNCTIONS[t.type].label;
+    let arg = "";
+    if (t.B !== 0) arg = (t.B === 1 ? "" : t.B === -1 ? "-" : fmtNum(t.B) + "·") + "x";
+    if (t.C !== 0) arg += (arg ? (t.C > 0 ? " + " : " - ") + fmtNum(Math.abs(t.C)) : fmtNum(t.C));
+    if (!arg) arg = "0";
+    const body = inner.includes("(x)")
+      ? inner.replace("(x)", "(" + arg + ")")
+      : inner.replace("x", arg === "x" ? "x" : "(" + arg + ")");
+    let s = t.A === 1 ? body : t.A === -1 ? "-" + body : fmtNum(t.A) + "·" + body;
+    if (t.D !== 0) s += (t.D > 0 ? " + " : " - ") + fmtNum(Math.abs(t.D));
+    return s;
+  }
+
+  // ---- UI: function list ----
+  const fnList = document.getElementById("fnList");
+
+  function addTerm(type, params) {
+    const t = Object.assign({
+      id: state.nextId++,
+      type: type || "sin",
+      A: 1, B: 1, C: 0, D: 0,
+      visible: true,
+      color: COLORS[(state.nextId - 2) % COLORS.length]
+    }, params || {});
+    state.terms.push(t);
+    renderList();
+    draw();
+  }
+
+  function removeTerm(id) {
+    state.terms = state.terms.filter((t) => t.id !== id);
+    renderList();
+    draw();
+  }
+
+  function renderList() {
+    fnList.innerHTML = "";
+    for (const t of state.terms) {
+      const div = document.createElement("div");
+      div.className = "fn";
+      div.style.borderLeftColor = t.color;
+
+      const header = document.createElement("div");
+      header.className = "fn-header";
+
+      const vis = document.createElement("input");
+      vis.type = "checkbox";
+      vis.checked = t.visible;
+      vis.title = "Show / include in sum";
+      vis.addEventListener("change", () => { t.visible = vis.checked; updateFormulas(); draw(); });
+
+      const sel = document.createElement("select");
+      for (const key of Object.keys(FUNCTIONS)) {
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = FUNCTIONS[key].label;
+        if (key === t.type) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener("change", () => { t.type = sel.value; updateFormulas(); draw(); });
+
+      const color = document.createElement("input");
+      color.type = "color";
+      color.value = t.color;
+      color.addEventListener("input", () => {
+        t.color = color.value;
+        div.style.borderLeftColor = t.color;
+        draw();
+      });
+
+      const del = document.createElement("button");
+      del.textContent = "✕";
+      del.title = "Remove";
+      del.addEventListener("click", () => removeTerm(t.id));
+
+      header.append(vis, sel, color, del);
+
+      const params = document.createElement("div");
+      params.className = "fn-params";
+      for (const p of ["A", "B", "C", "D"]) {
+        const lbl = document.createElement("label");
+        lbl.textContent = p;
+        const inp = document.createElement("input");
+        inp.type = "number";
+        inp.step = "any";
+        inp.value = t[p];
+        inp.addEventListener("input", () => {
+          const v = parseFloat(inp.value);
+          if (Number.isFinite(v)) { t[p] = v; updateFormulas(); draw(); }
+        });
+        lbl.appendChild(inp);
+        params.appendChild(lbl);
+      }
+
+      const formula = document.createElement("div");
+      formula.className = "fn-formula";
+      formula.dataset.id = t.id;
+
+      div.append(header, params, formula);
+      fnList.appendChild(div);
+    }
+    updateFormulas();
+  }
+
+  function updateFormulas() {
+    for (const el of fnList.querySelectorAll(".fn-formula")) {
+      const t = state.terms.find((x) => x.id === Number(el.dataset.id));
+      if (t) el.textContent = "y = " + termFormula(t);
+    }
+    const visible = state.terms.filter((t) => t.visible);
+    document.getElementById("sumFormula").textContent = visible.length
+      ? "Σ = " + visible.map(termFormula).join("  +  ")
+      : "Σ = 0 (no visible functions)";
+  }
+
+  // ---- View controls ----
+  const inputs = {
+    xMin: document.getElementById("xMin"),
+    xMax: document.getElementById("xMax"),
+    yMin: document.getElementById("yMin"),
+    yMax: document.getElementById("yMax")
+  };
+
+  function syncViewInputs() {
+    for (const k of Object.keys(inputs)) inputs[k].value = +state.view[k].toPrecision(6);
+  }
+
+  for (const k of Object.keys(inputs)) {
+    inputs[k].addEventListener("change", () => {
+      const v = Object.assign({}, state.view);
+      const n = parseFloat(inputs[k].value);
+      if (Number.isFinite(n)) v[k] = n;
+      if (v.xMin < v.xMax && v.yMin < v.yMax) state.view = v;
+      syncViewInputs();
+      draw();
+    });
+  }
+
+  document.getElementById("addFn").addEventListener("click", () => addTerm("sin"));
+  document.getElementById("clearFns").addEventListener("click", () => {
+    state.terms = [];
+    renderList();
+    draw();
+  });
+  document.getElementById("showSum").addEventListener("change", (e) => {
+    state.showSum = e.target.checked;
+    draw();
+  });
+  document.getElementById("resetView").addEventListener("click", () => {
+    state.view = Object.assign({}, DEFAULT_VIEW);
+    syncViewInputs();
+    draw();
+  });
+  document.getElementById("autoY").addEventListener("click", autoFitY);
+
+  function autoFitY() {
+    const { xMin, xMax } = state.view;
+    const ys = [];
+    const N = 1000;
+    const fns = state.terms.filter((t) => t.visible).map((t) => (x) => evalTerm(t, x));
+    if (state.showSum && fns.length) fns.push(evalSum);
+    for (const f of fns) {
+      for (let i = 0; i <= N; i++) {
+        const y = f(xMin + (xMax - xMin) * i / N);
+        if (Number.isFinite(y)) ys.push(y);
+      }
+    }
+    if (!ys.length) return;
+    ys.sort((a, b) => a - b);
+    // Use percentiles so asymptotes (e.g. tan) don't blow up the range.
+    let lo = ys[Math.floor(ys.length * 0.02)];
+    let hi = ys[Math.ceil(ys.length * 0.98) - 1];
+    if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+    const pad = (hi - lo) * 0.1;
+    state.view.yMin = lo - pad;
+    state.view.yMax = hi + pad;
+    syncViewInputs();
+    draw();
+  }
+
+  // ---- Drawing ----
+  const canvas = document.getElementById("plot");
+  const ctx = canvas.getContext("2d");
+  let cssW = 0, cssH = 0;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    cssW = rect.width;
+    cssH = rect.height;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  const toPx = (x) => (x - state.view.xMin) / (state.view.xMax - state.view.xMin) * cssW;
+  const toPy = (y) => (state.view.yMax - y) / (state.view.yMax - state.view.yMin) * cssH;
+  const fromPx = (px) => state.view.xMin + px / cssW * (state.view.xMax - state.view.xMin);
+  const fromPy = (py) => state.view.yMax - py / cssH * (state.view.yMax - state.view.yMin);
+
+  function niceStep(range, targetTicks) {
+    const raw = range / targetTicks;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const nice = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+    return nice * mag;
+  }
+
+  function drawGrid() {
+    const { xMin, xMax, yMin, yMax } = state.view;
+    const xs = niceStep(xMax - xMin, Math.max(2, cssW / 80));
+    const ys = niceStep(yMax - yMin, Math.max(2, cssH / 60));
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#eee";
+    ctx.fillStyle = "#888";
+    ctx.font = "11px system-ui, sans-serif";
+
+    const axisPy = Math.min(Math.max(toPy(0), 0), cssH);
+    const axisPx = Math.min(Math.max(toPx(0), 0), cssW);
+
+    ctx.beginPath();
+    for (let x = Math.ceil(xMin / xs) * xs; x <= xMax; x += xs) {
+      const px = Math.round(toPx(x)) + 0.5;
+      ctx.moveTo(px, 0); ctx.lineTo(px, cssH);
+    }
+    for (let y = Math.ceil(yMin / ys) * ys; y <= yMax; y += ys) {
+      const py = Math.round(toPy(y)) + 0.5;
+      ctx.moveTo(0, py); ctx.lineTo(cssW, py);
+    }
+    ctx.stroke();
+
+    // Axes
+    ctx.strokeStyle = "#555";
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(axisPy) + 0.5); ctx.lineTo(cssW, Math.round(axisPy) + 0.5);
+    ctx.moveTo(Math.round(axisPx) + 0.5, 0); ctx.lineTo(Math.round(axisPx) + 0.5, cssH);
+    ctx.stroke();
+
+    // Labels
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (let x = Math.ceil(xMin / xs) * xs; x <= xMax; x += xs) {
+      if (Math.abs(x) < xs / 2) continue;
+      ctx.fillText(fmtNum(+x.toPrecision(10)), Math.min(Math.max(toPx(x), 14), cssW - 14), Math.min(axisPy + 3, cssH - 14));
+    }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    for (let y = Math.ceil(yMin / ys) * ys; y <= yMax; y += ys) {
+      if (Math.abs(y) < ys / 2) continue;
+      ctx.fillText(fmtNum(+y.toPrecision(10)), Math.min(axisPx + 4, cssW - 40), toPy(y));
+    }
+  }
+
+  // Plots f across the view, breaking the line at undefined points and
+  // at discontinuities (e.g. asymptotes of tan or 1/x).
+  function plot(f, color, width) {
+    const samples = Math.max(2, Math.round(cssW * 2));
+    const limit = cssH * 10;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    let prev = null;
+    for (let i = 0; i <= samples; i++) {
+      const px = cssW * i / samples;
+      const y = f(fromPx(px));
+      if (!Number.isFinite(y)) { prev = null; continue; }
+      const py = Math.max(-limit, Math.min(limit, toPy(y)));
+      const jump = prev !== null && Math.abs(py - prev) > cssH &&
+        ((prev < 0 && py > cssH) || (prev > cssH && py < 0) || Math.abs(py - prev) > cssH * 4);
+      if (prev === null || jump) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+      prev = py;
+    }
+    ctx.stroke();
+  }
+
+  function drawLegend() {
+    const items = state.terms.filter((t) => t.visible).map((t) => ({ label: termFormula(t), color: t.color, w: 2 }));
+    if (state.showSum && items.length) items.push({ label: "Σ (sum)", color: SUM_COLOR, w: 3 });
+    if (!items.length) return;
+    ctx.font = "12px system-ui, sans-serif";
+    const lineH = 18;
+    const boxW = Math.max(...items.map((it) => ctx.measureText(it.label).width)) + 44;
+    const boxH = items.length * lineH + 8;
+    const x0 = cssW - boxW - 10, y0 = 10;
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.strokeStyle = "#ccc";
+    ctx.lineWidth = 1;
+    ctx.fillRect(x0, y0, boxW, boxH);
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, boxW, boxH);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    items.forEach((it, i) => {
+      const y = y0 + 4 + lineH * i + lineH / 2;
+      ctx.strokeStyle = it.color;
+      ctx.lineWidth = it.w;
+      ctx.beginPath(); ctx.moveTo(x0 + 8, y); ctx.lineTo(x0 + 30, y); ctx.stroke();
+      ctx.fillStyle = "#222";
+      ctx.fillText(it.label, x0 + 36, y);
+    });
+  }
+
+  function draw() {
+    if (!cssW || !cssH) return;
+    ctx.clearRect(0, 0, cssW, cssH);
+    drawGrid();
+    const visible = state.terms.filter((t) => t.visible);
+    for (const t of visible) plot((x) => evalTerm(t, x), t.color, 2);
+    if (state.showSum && visible.length) plot(evalSum, SUM_COLOR, 3);
+    drawLegend();
+  }
+
+  // ---- Interaction: pan, zoom, readout ----
+  const readout = document.getElementById("readout");
+  let drag = null;
+
+  canvas.addEventListener("mousedown", (e) => {
+    drag = { x: e.offsetX, y: e.offsetY, view: Object.assign({}, state.view) };
+  });
+  window.addEventListener("mouseup", () => { drag = null; });
+  canvas.addEventListener("mousemove", (e) => {
+    if (drag) {
+      const v = drag.view;
+      const dx = (e.offsetX - drag.x) / cssW * (v.xMax - v.xMin);
+      const dy = (e.offsetY - drag.y) / cssH * (v.yMax - v.yMin);
+      state.view = { xMin: v.xMin - dx, xMax: v.xMax - dx, yMin: v.yMin + dy, yMax: v.yMax + dy };
+      syncViewInputs();
+      draw();
+    }
+    const x = fromPx(e.offsetX);
+    const parts = ["x = " + fmtNum(x)];
+    state.terms.filter((t) => t.visible).forEach((t, i) => {
+      const y = evalTerm(t, x);
+      parts.push("f" + (i + 1) + " = " + (Number.isFinite(y) ? fmtNum(y) : "undefined"));
+    });
+    if (state.terms.some((t) => t.visible)) {
+      const s = evalSum(x);
+      parts.push("Σ = " + (Number.isFinite(s) ? fmtNum(s) : "undefined"));
+    }
+    readout.textContent = parts.join("   ");
+  });
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 0.9 : 1 / 0.9;
+    const cx = fromPx(e.offsetX), cy = fromPy(e.offsetY);
+    const v = state.view;
+    state.view = {
+      xMin: cx + (v.xMin - cx) * factor, xMax: cx + (v.xMax - cx) * factor,
+      yMin: cy + (v.yMin - cy) * factor, yMax: cy + (v.yMax - cy) * factor
+    };
+    syncViewInputs();
+    draw();
+  }, { passive: false });
+
+  window.addEventListener("resize", resize);
+
+  // ---- Initial state ----
+  addTerm("sin");
+  addTerm("cos", { A: 0.5, B: 2 });
+  resize();
+})();
+</script>
+</body>
+</html>
